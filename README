@@ -1,0 +1,24 @@
+= ActsAsRangeSet
+
+ActsAsRangeSet allows you to store ranges of values using a single row.
+
+== Example
+  # movie_still_frames table should have at least from_time, to_time and movie_name fields
+  class MovieStillFrame < ActiveRecord::Base
+    acts_as_range_set :on => time, :scope => :movie_name, :precision => 0.04 # Standard for 25 fps
+
+    def filename_for(time)
+      frame = "%02d" % (time.to_f.frac / 0.04) 
+       "/movies/#{movie_name.underscore}/#{time.to_i}_#{frame}.jpg"
+    end
+  end
+  
+  @sample = MovieStillFrame.create(:movie_name => "Very Scary Movie", :time => (0..10.minutes))
+  @sample2 = MovieStillFrame.create(:movie_name => "Very Scary Movie", :time => (10.minutes..20.minutes))
+
+Note that <tt>@sample2.time</tt> now is <tt>0..20.minutes</tt>. As will <tt>@sample</tt> after reload.
+   @sample2.filename_for(15.minutes) # => "/movies/Very Scary Movie/900_00.jpg"
+
+And you don't have to keep 30,000 rows for each frame ;)
+
+Copyright (c) 2008 Artem Ignatiev, released under the MIT license
