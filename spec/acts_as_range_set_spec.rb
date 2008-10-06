@@ -304,6 +304,52 @@ describe ActsAsRangeSet, "finding with ranges in :conditions hash" do
   end
 end
 
+describe ActsAsRangeSet, "finder methods" do
+  before(:each) do
+    HeavyActsAsRangeSet.count.should == 0
+    ActsAsRangeSet.count.should == 0
+
+    ActsAsRangeSet.create(:value => 1..3)
+  end
+
+  after(:each) do
+    HeavyActsAsRangeSet.delete_all
+    ActsAsRangeSet.delete_all
+  end
+
+  it "should include for_range and for_XXXXs" do
+    ActsAsRangeSet.methods.should include("for_range")
+    ActsAsRangeSet.methods.should include("for_values")
+  end
+
+  it "should return empty set when no records found" do
+    @results = ActsAsRangeSet.for_range(5)
+    @results.size.should == 0
+  end
+
+  it "should return exact match when found" do
+    @results = ActsAsRangeSet.for_values(1..3)
+    @results.size.should == 1
+    @results.first.value.should == (1..3)
+  end
+
+  it "should return records that have subranges of given range" do
+    ActsAsRangeSet.create(:value => 5..7)
+    ActsAsRangeSet.create(:value => 9..11)
+
+    @result = ActsAsRangeSet.for_values(1..11)
+    @result.size.should == 3
+
+    @result = ActsAsRangeSet.for_range(6..10)
+    @result.size.should == 2
+    @result.each { |row| (row.value == (5..7) || row.value == (9..11)).should == true }
+
+    @result = ActsAsRangeSet.for_values(4..8)
+    @result.size.should == 1
+    @result.first.value.should == (5..7)
+  end
+end
+
 describe ActsAsRangeSet, "range updating with #drop_range! method" do
   before(:each) do
     @range = ActsAsRangeSet.new(:value => 1..10)

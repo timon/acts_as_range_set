@@ -61,9 +61,9 @@ module ActiveRecord #:nodoc:
       #  @project = Projects.find(:first)
       #  @days = @project.allocated_days.find(:all, :conditions => { :day => today.beginning_of_week..today.end_of_week })
       #
-      # Before <tt>has_many_range_sets</tt>, will be implemented, that should be replaced with
+      # Use the following instead:
       #
-      #  @days = DayRange.find(:all, :conditions => { :project_id => @project.id, :day => today.beginning_of_week..today.end_of_week })
+      #  @days = @project.allocated_days.for_range(today.beginning_of_week..today.end_of_week)
       #
 
       module ClassMethods
@@ -75,18 +75,23 @@ module ActiveRecord #:nodoc:
         # <tt>:scope</tt>:: specifies scope keys to distiguish several rangesets.
         # <tt>:precision</tt>:: specifies difference between distinguished values.
         #
+        # Additionaly, two finder methods (or named scopes) are defined. One is named +for_range+,
+        # and second is named by the name of range column, e.g. for_blocks if you do +acts_as_range_set :on => :block
+        #
         # == Examples
+        # 
         # <tt>acts_as_range_set :on => :ip</tt>
         #
         # uses +from_ip+ and +to_ip+ to store ranges, and defines method +ip+
         # as range (<tt>self["from_ip"]</tt>..<tt>self["to_ip"]</tt>). E.g. if you want to
-        # have simple ip-based ban-list supporting blacklisting networks
+        # have simple ip-based ban-list supporting blacklisting networks and decided to store IPs in numeric form
         #
         # <tt>acts_as_range_set :on => :block, :scope => :device_id</tt>
         #
         # uses +from_block+ and +to_block+ to store ranges of blocks on
         # several devices. Can be used as list of contigous regions of used
         # blocks on several devices.
+        #
         def acts_as_range_set(options = {})
           raise "You need to specify ':on'" unless options[:on]
 
@@ -110,10 +115,14 @@ module ActiveRecord #:nodoc:
             end
           end
 
+          class_eval("def self.for_#{options[:on].to_s.pluralize}(arg); for_range arg end")
+
           extend  ActiveRecord::Acts::RangeSet::SingletonMethods
           include ActiveRecord::Acts::RangeSet::InstanceMethods
 
           before_save :try_merge!
+          
+          named_scope :for_range, lambda { |constraint| { :conditions => construct_range_conditions(constraint) } }
         end
 
         # Sets the name of column which stores beginnings of ranges.
@@ -289,17 +298,22 @@ module ActiveRecord #:nodoc:
           constraint = conditions[range_column.to_sym] || conditions[range_column.to_s]
           constraints_for_range = nil
           conditions.reject! { |key, constr| key.to_sym == range_column.to_sym}
-          if constraint.is_a?(Range)
-            constraints_for_range = [ "#{from_column_name} BETWEEN :begin AND :end OR (#{from_column_name} < :begin AND #{to_column_name} >= :begin)",
-                    { :begin => constraint.begin, :end => constraint.end } ]
-          elsif constraint
-            constraints_for_range = [ "? BETWEEN #{from_column_name} AND #{to_column_name}", constraint ]
-          else
-            constraints_for_range = [ "#{from_column_name} IS NULL AND #{to_column_name} IS NULL"]
-          end
-          [merge_conditions(conditions, constraints_for_range), constraint]
+          [merge_conditions(conditions, construct_range_conditions(constraint)), constraint]
         end
 
+        # Expand constraint value into appropriate find's condition
+        def construct_range_conditions(constraint)
+          if constraint.is_a?(Range)
+            condition = [ "#{from_column_name} BETWEEN :begin AND :end OR (#{from_column_name} < :begin AND #{to_column_name} >= :begin)",
+                    { :begin => constraint.begin, :end => constraint.end } ]
+          elsif constraint
+            condition = [ "? BETWEEN #{from_column_name} AND #{to_column_name}", constraint ]
+          else
+            condition = [ "#{from_column_name} IS NULL AND #{to_column_name} IS NULL"]
+          end
+          condition
+        end
+        
         # This method searches for adjacent ranges and tries to jam them into one.
         # It is to be used after you migrated your table
         def combine!(check_overlap = true)
