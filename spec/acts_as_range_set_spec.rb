@@ -238,6 +238,18 @@ describe ActsAsRangeSet, "data recovery" do
     ActsAsRangeSet.count.should == 1
     ActsAsRangeSet.first.value.should == (1..10)
   end
+
+  it "should not left ranges split…" do
+    @connection = ActsAsRangeSet.connection
+    ["(1, 6)", "(7, 8)", "(10, 11)"].each do |values|
+      @connection.execute("INSERT INTO range_checks(from_value, to_value) VALUES #{values}")
+    end
+    ActsAsRangeSet.count.should == 3
+    ActsAsRangeSet.combine!
+    ActsAsRangeSet.count.should == 2
+    ActsAsRangeSet.first.value.should == (1..8)
+    ActsAsRangeSet.last.value.should == (10..11)    
+  end
 end
 
 describe ActsAsRangeSet, "finding with ranges in :conditions hash" do

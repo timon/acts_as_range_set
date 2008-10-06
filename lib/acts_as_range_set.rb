@@ -45,6 +45,27 @@ module ActiveRecord #:nodoc:
       #
       # If your ranges require more precision, you can override this value.
       #
+      # == Caveats
+      # Unfortunately, following does not work yet:
+      # 
+      #  class Project < ActiveRecord::Base
+      #    has_many :allocated_days, :class => "DayRange"
+      #  end
+      #
+      #  class DayRange < ActiveRecord::Base
+      #    belongs_to :project
+      #    acts_as_range_set :on => :day, :scope => :project_id
+      #  end
+      #
+      #  today = Date.today
+      #  @project = Projects.find(:first)
+      #  @days = @project.allocated_days.find(:all, :conditions => { :day => today.beginning_of_week..today.end_of_week })
+      #
+      # Before <tt>has_many_range_sets</tt>, will be implemented, that should be replaced with
+      #
+      #  @days = DayRange.find(:all, :conditions => { :project_id => @project.id, :day => today.beginning_of_week..today.end_of_week })
+      #
+
       module ClassMethods
         # Specifies that this model stores range of values for single field
         #
@@ -199,7 +220,7 @@ module ActiveRecord #:nodoc:
           aug_range = self.class.enlarge_range(range)
           conditions = append_scope_to_conditions({ self.class.range_column => aug_range })
           other_rows = self.class.find(:all, :conditions => conditions)
-          other_rows.reject! { |row| row.id == self.id || !row[c_from] || !row[c_to] }
+          other_rows.reject! { |row| row[self.class.primary_key] == self[self.class.primary_key] || !row[c_from] || !row[c_to] }
           return true if other_rows.empty?
           big_range = other_rows.map(&c_from.to_sym).min..other_rows.map(&c_to.to_sym).max
           if range.include?(big_range)
@@ -265,7 +286,7 @@ module ActiveRecord #:nodoc:
 
         def rewrite_range_conditions!(conditions) #:nodoc:
           return [conditions, nil] unless conditions.keys.map(&:to_s).include?(range_column.to_s)
-          constraint = conditions[range_column] || conditions[range_column.to_s]
+          constraint = conditions[range_column.to_sym] || conditions[range_column.to_s]
           constraints_for_range = nil
           conditions.reject! { |key, constr| key.to_sym == range_column.to_sym}
           if constraint.is_a?(Range)
@@ -281,13 +302,14 @@ module ActiveRecord #:nodoc:
 
         # This method searches for adjacent ranges and tries to jam them into one.
         # It is to be used after you migrated your table
-        def combine!
+        def combine!(check_overlap = true)
           if scope = self.aars_options[:scope]
-            select = "DISTINCT " + scope.to_a.map { |a| connection.quote_column_name(a) }.join(", ")
+            scope = scope.is_a?(Array) ? scope : [scope]
+            select = "DISTINCT " + scope.map { |a| connection.quote_column_name(a) }.join(", ")
             scopes = find(:all, :select => select)
-            scopes.each { |scope| combine_with_scope!(scope.attributes)}
+            scopes.each { |scope| combine_with_scope!(scope.attributes, check_overlap)}
           else
-            combine_with_scope!(nil)
+            combine_with_scope!(nil, check_overlap)
           end
         end
 
@@ -313,35 +335,40 @@ module ActiveRecord #:nodoc:
         end
         
         protected
-        def combine_with_scope!(scope_args) #:nodoc:
-          # 1. Find overlapping regions
+        def combine_with_scope!(scope_args, check_overlap) #:nodoc:
+          # 1. Fix overlapping regions
           tlft = quoted_table_name
           trgt = connection.quote_table_name('rgt')
-          cid = connection.quote_column_name('id')
+          cid = connection.quote_column_name(primary_key)
           cfrom = connection.quote_column_name(from_column_name)
           cto = connection.quote_column_name(to_column_name)
-          query = "SELECT DISTINCT #{tlft}.#{cid} as lft_id FROM #{self.table_name} JOIN #{self.table_name} AS rgt"
-          where = "#{tlft}.#{cid} <> #{trgt}.#{cid} AND #{tlft}.#{cfrom} < #{trgt}.#{cfrom} AND #{tlft}.#{cto} >= #{trgt}.#{cfrom}"
-          if scope_args
-            query += ' ON (' + scope_args.keys.map { |col| ccol = connection.quote_column_name(col); "#{tlft}.#{ccol} = #{trgt}.#{ccol}" }.join(" AND ") + ')'
-            where += ' AND (' + sanitize_sql_hash(scope_args) + ')'
+          if check_overlap
+            query = "SELECT DISTINCT #{tlft}.#{cid} as lft_id FROM #{self.table_name} JOIN #{self.table_name} AS rgt"
+            where = "#{tlft}.#{cid} <> #{trgt}.#{cid} AND #{tlft}.#{cfrom} < #{trgt}.#{cfrom} AND #{tlft}.#{cto} >= #{trgt}.#{cfrom}"
+            if scope_args
+              query += ' ON (' + scope_args.keys.map { |col| ccol = connection.quote_column_name(col); "#{tlft}.#{ccol} = #{trgt}.#{ccol}" }.join(" AND ") + ')'
+              where += ' AND (' + sanitize_sql_hash(scope_args) + ')'
+            end
+            collisions = connection.select_all("#{query} WHERE #{where}")
+            collisions.each { |row| object = self.find(row["lft_id"]); object.save }
           end
-          collisions = connection.select_all("#{query} WHERE #{where}")
-          # 2. These records have chances to be merged
-          collisions.each { |row| object = self.find(row["lft_id"]); object.save }
-          conditions = scope_args ? { :conditions => scope_args } : {}
           # try to merge
-          min_id = self.minimum(:id, conditions)
-          max_id = self.maximum(:id, conditions)
-          split_combine!(scope_args, min_id, max_id)
+          conditions = scope_args ? { :conditions => scope_args } : {}
+          min_from = self.minimum(from_column_name, conditions)
+          max_from = self.maximum(to_column_name, conditions)
+          split_combine!(scope_args, min_from, max_from)
         end
 
-        def split_combine!(scope, min_id, max_id) #:nodoc:
+        def split_combine!(scope, min_from, max_from) #:nodoc:
           # if pointed to single row, do nothing
-          return if min_id >= max_id
-          # if min_id..max_id & scope == empty set or single row, do nothing
-          conditions = { :id => (min_id..max_id) }
+          return if min_from > max_from - precision
+          # if min_from..max_from & scope == empty set or single row, do nothing
+          from = self.from_column_name.to_s
+          to = self.to_column_name.to_s
+          rng = self.range_column
+          conditions = { rng  => (min_from..max_from) }
           conditions.merge!(scope) if scope
+          conditions, range = rewrite_range_conditions!(conditions)
 
           unless range_length_func 
             # I'm sorry, but we have to do a full scan.
@@ -349,11 +376,9 @@ module ActiveRecord #:nodoc:
             return
           end
           # Okay, we can check ranges inside sql connections.
-          from = self.from_column_name.to_s
-          to = self.to_column_name.to_s
 
           query = "SELECT SUM(#{range_length_func}) AS actually_have, MAX(#{to}) AS range_end, MIN(#{from}) AS range_begin FROM #{self.table_name}"
-          query += " WHERE " + sanitize_sql_hash_for_conditions(conditions)
+          query += " WHERE " + sanitize_sql_for_conditions(conditions)
           res = connection.select_all(query)
           return if res.empty?
           row = res.first
@@ -363,16 +388,23 @@ module ActiveRecord #:nodoc:
           if (want - have).abs < precision
             # Can be compacted! Yeah!
             rows ||= find(:all, :conditions => conditions, :order => "#{from} ASC")
+            return if rows.size <= 1
             range_end = rows.map(&to.to_sym).max
             winner = rows.shift
-            winner[to] = range_end
-            delete_all(:id => rows.map(&:id))
-            winner.save!
+            
+            update_stmt = sanitize_sql_hash_for_assignment(to => range_end)
+            delete_stmt = sanitize_sql_hash_for_conditions(primary_key => rows.map { |row| row[primary_key]})
+            where_stmt = sanitize_sql_hash_for_conditions(primary_key => winner[primary_key])
+            transaction do
+              connection.execute("DELETE FROM #{quoted_table_name} WHERE #{delete_stmt}")
+              connection.execute("UPDATE #{quoted_table_name} SET #{update_stmt} WHERE #{where_stmt}")
+            end
           else
             # have to split.
-            mid_id = (max_id + min_id) / 2
-            split_combine!(scope, min_id, mid_id)
-            split_combine!(scope, mid_id + 1, max_id)
+            return if max_from - min_from <= precision
+            mid_from = min_from + (max_from - min_from) / 2
+            split_combine!(scope, min_from, mid_from)
+            split_combine!(scope, mid_from, max_from)
           end
         end
       end
