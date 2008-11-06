@@ -304,7 +304,7 @@ module ActiveRecord #:nodoc:
         # Expand constraint value into appropriate find's condition
         def construct_range_conditions(constraint)
           if constraint.is_a?(Range)
-            condition = [ "#{from_column_name} BETWEEN :begin AND :end OR (#{from_column_name} < :begin AND #{to_column_name} >= :begin)",
+            condition = [ "(#{from_column_name} BETWEEN :begin AND :end) OR (:begin BETWEEN #{from_column_name} AND #{to_column_name})",
                     { :begin => constraint.begin, :end => constraint.end } ]
           elsif constraint
             condition = [ "? BETWEEN #{from_column_name} AND #{to_column_name}", constraint ]
@@ -313,7 +313,7 @@ module ActiveRecord #:nodoc:
           end
           condition
         end
-        
+
         # This method searches for adjacent ranges and tries to jam them into one.
         # It is to be used after you migrated your table
         def combine!(check_overlap = true)
@@ -330,24 +330,24 @@ module ActiveRecord #:nodoc:
         def precision #:nodoc:
           self.aars_options[:precision]
         end
-        
+
         def next_range_start(val)
           return nil unless val
           return val.end + precision if val.is_a? Range
           val + precision
         end
-        
+
         def prev_range_end(val)
           return nil unless val
           return val.begin - precision if val.is_a? Range
           val - precision
         end
-        
+
         def enlarge_range(range_or_val)
           return nil unless range_or_val
           return prev_range_end(range_or_val)..next_range_start(range_or_val)
         end
-        
+
         protected
         def combine_with_scope!(scope_args, check_overlap) #:nodoc:
           # 1. Fix overlapping regions
