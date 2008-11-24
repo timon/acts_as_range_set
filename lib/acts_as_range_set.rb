@@ -96,7 +96,7 @@ module ActiveRecord #:nodoc:
           raise "You need to specify ':on'" unless options[:on]
 
           class_inheritable_accessor :aars_options
-          self.aars_options = options.merge(:precision => 1)
+          self.aars_options = {:precision => 1}.merge options
           define_method(options[:on]) do
             _from = self.class.from_column_name
             _to = self.class.to_column_name
