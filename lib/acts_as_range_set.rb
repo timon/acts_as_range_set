@@ -120,8 +120,8 @@ module ActiveRecord #:nodoc:
           extend  ActiveRecord::Acts::RangeSet::SingletonMethods
           include ActiveRecord::Acts::RangeSet::InstanceMethods
 
-          before_save :try_merge!
-          
+          after_save :try_merge!
+
           named_scope :for_range, lambda { |constraint| { :conditions => construct_range_conditions(constraint) } }
         end
 
@@ -253,8 +253,9 @@ module ActiveRecord #:nodoc:
             end
             other_rows.each(&:destroy)
             first.update_attributes({ c_from => new_from, c_to => new_to })
+            current_id = id
             reload_from(first)
-            return false
+            self.class.delete_all({ :id => current_id})
           end
         end
 
@@ -363,7 +364,8 @@ module ActiveRecord #:nodoc:
               query += ' ON (' + scope_args.keys.map { |col| ccol = connection.quote_column_name(col); "#{tlft}.#{ccol} = #{trgt}.#{ccol}" }.join(" AND ") + ')'
               where += ' AND (' + sanitize_sql_hash(scope_args) + ')'
             end
-            collisions = connection.select_all("#{query} WHERE #{where}")
+            collision_query = "#{query} WHERE #{where}"
+            collisions = connection.select_all(collision_query)
             collisions.each { |row| object = self.find(row["lft_id"]); object.save }
           end
           # try to merge
